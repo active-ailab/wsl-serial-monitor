@@ -10,3 +10,4 @@ images/icon.svg
 .vscode-test-web/**
 vsc-extension-quickstart.md
 CHANGELOG.md
+logs/**

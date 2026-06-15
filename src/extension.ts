@@ -10,10 +10,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SerialPortManager } from './serialPort';
 import { SerialMonitorViewProvider } from './serialMonitorView';
+import { LogStore } from './logStore';
 
 let serialManager: SerialPortManager | undefined;
 let viewProvider: SerialMonitorViewProvider | undefined;
 let outputChannel: vscode.OutputChannel | undefined;
+let logStore: LogStore | undefined;
+let agentCliCommand: string | undefined;
 let autoConnectAttempted = false;
 let openInProgress = false;
 
@@ -46,6 +49,7 @@ class SerialMonitorTreeProvider implements vscode.TreeDataProvider<SerialMonitor
         items.push(new SerialMonitorTreeItem('⏹ Close Port', 'wsl-serial-monitor.close'));
         items.push(new SerialMonitorTreeItem('💾 Save Log', 'wsl-serial-monitor.saveLog'));
         items.push(new SerialMonitorTreeItem('🗑 Clear Log', 'wsl-serial-monitor.clearLog'));
+        items.push(new SerialMonitorTreeItem('🤖 Copy Agent CLI', 'wsl-serial-monitor.copyAgentCliCommand'));
         items.push(new SerialMonitorTreeItem('⚙ Open Settings', 'wsl-serial-monitor.openSettings'));
         return items;
     }
@@ -56,6 +60,12 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine(`[INIT] Platform: ${process.platform}, VS Code: ${vscode.version}`);
 
     serialManager = new SerialPortManager();
+    const agentLogDir = getAgentLogDirectory(context);
+    logStore = new LogStore(agentLogDir);
+    cleanupOldLogs(logStore);
+    const agentCli = ensureAgentCliShim(context, agentLogDir);
+    agentCliCommand = `${quoteShellPath(agentCli.executablePath)} logs`;
+    outputChannel.appendLine(`[CLI] Agent CLI: ${agentCliCommand} sessions`);
     viewProvider = new SerialMonitorViewProvider(
         context,
         serialManager,
@@ -149,6 +159,18 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('wsl-serial-monitor.copyAgentCliCommand', async () => {
+            if (!agentCliCommand) {
+                vscode.window.showWarningMessage('Agent CLI is not ready.');
+                return;
+            }
+            const command = `${agentCliCommand} sessions`;
+            await vscode.env.clipboard.writeText(command);
+            vscode.window.showInformationMessage(`Agent CLI command copied: ${command}`);
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('wsl-serial-monitor.openSettings', async () => {
             await vscode.commands.executeCommand(
                 'workbench.action.openSettings',
@@ -161,12 +183,18 @@ export function activate(context: vscode.ExtensionContext) {
     let dataCount = 0;
     serialManager.on('data', (data: string) => {
         dataCount++;
+        logStore?.appendSerialData(data);
         if (viewProvider) { viewProvider.appendLog(data); }
     });
 
     serialManager.on('connect', (info: string) => {
         outputChannel?.appendLine(`[CONNECTED] ${info}`);
         dataCount = 0;
+        const connection = parseSerialConnectionInfo(info);
+        const session = logStore?.startSession(connection.port, connection.baudRate);
+        if (session) {
+            outputChannel?.appendLine(`[LOG] Session ${session.sessionId} -> ${session.filePath}`);
+        }
         if (viewProvider) { viewProvider.setStatus(true, info); }
         treeProvider.refresh();
         vscode.window.showInformationMessage(`Connected: ${info}`);
@@ -174,6 +202,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     serialManager.on('disconnect', (reason: string) => {
         outputChannel?.appendLine(`[DISCONNECTED] ${reason} (${dataCount} lines)`);
+        logStore?.closeSession(reason);
         if (viewProvider) { viewProvider.setStatus(false, reason); }
         treeProvider.refresh();
         vscode.window.showWarningMessage(`Disconnected: ${reason}`);
@@ -324,6 +353,86 @@ function buildPortConfig(port: string, baudRate: number) {
     };
 }
 
+function getAgentLogDirectory(context: vscode.ExtensionContext): string {
+    const config = vscode.workspace.getConfiguration('wsl-serial-monitor');
+    const configuredDir = config.get<string>('agentLogDirectory', 'logs').trim() || 'logs';
+
+    if (path.isAbsolute(configuredDir)) {
+        return configuredDir;
+    }
+
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    const baseDir = workspaceFolders?.[0]?.uri.fsPath ?? context.globalStorageUri.fsPath;
+    return path.join(baseDir, configuredDir);
+}
+
+function ensureAgentCliShim(
+    context: vscode.ExtensionContext,
+    agentLogDir: string
+): { executablePath: string } {
+    const binDir = path.join(context.globalStorageUri.fsPath, 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+
+    const cliJsPath = path.join(context.extensionUri.fsPath, 'out', 'cli.js');
+    const nodePath = process.execPath;
+
+    if (process.platform === 'win32') {
+        const executablePath = path.join(binDir, 'wsl-serial-monitor.cmd');
+        const content = [
+            '@echo off',
+            `set "WSL_SERIAL_MONITOR_LOG_DIR=${agentLogDir}"`,
+            `"${nodePath}" "${cliJsPath}" %*`
+        ].join('\r\n');
+        fs.writeFileSync(executablePath, content, 'utf-8');
+        return { executablePath };
+    }
+
+    const executablePath = path.join(binDir, 'wsl-serial-monitor');
+    const content = [
+        '#!/usr/bin/env sh',
+        `export WSL_SERIAL_MONITOR_LOG_DIR=${quoteShellPath(agentLogDir)}`,
+        `exec ${quoteShellPath(nodePath)} ${quoteShellPath(cliJsPath)} "$@"`
+    ].join('\n');
+    fs.writeFileSync(executablePath, `${content}\n`, 'utf-8');
+    fs.chmodSync(executablePath, 0o755);
+    return { executablePath };
+}
+
+function cleanupOldLogs(store: LogStore): void {
+    const config = vscode.workspace.getConfiguration('wsl-serial-monitor');
+    const maxAgeDays = config.get<number>('logRotationMaxAgeDays', 30);
+    const maxFiles = config.get<number>('logRotationMaxFiles', 100);
+    const maxTotalSizeMB = config.get<number>('logRotationMaxTotalSizeMB', 500);
+
+    try {
+        const result = store.cleanupOldSessions({ maxAgeDays, maxFiles, maxTotalSizeMB });
+        if (result.deleted > 0) {
+            outputChannel?.appendLine(`[CLEANUP] Deleted ${result.deleted} old log files, kept ${result.kept}`);
+        }
+    } catch (err: any) {
+        outputChannel?.appendLine(`[CLEANUP] Error: ${err.message}`);
+    }
+}
+
+function quoteShellPath(value: string): string {
+    if (process.platform === 'win32') {
+        return `"${value.replace(/"/g, '\\"')}"`;
+    }
+    return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function parseSerialConnectionInfo(info: string): { port: string; baudRate: number } {
+    const match = info.match(/^(.+?)\s+@\s+(\d+)\s+baud$/i);
+    if (!match) {
+        return { port: info.trim() || 'serial', baudRate: 0 };
+    }
+
+    return {
+        port: match[1].trim(),
+        baudRate: Number(match[2])
+    };
+}
+
 async function pickBaudRate(defaultBaudRate: number): Promise<number | undefined> {
     const baudRates = ['9600', '19200', '38400', '57600', '115200', '230400', '460800', '921600'];
     const selectedBaud = await vscode.window.showQuickPick(
@@ -382,4 +491,5 @@ export async function deactivate(): Promise<void> {
     if (serialManager) {
         await serialManager.close();
     }
+    logStore?.closeSession('extension deactivated');
 }

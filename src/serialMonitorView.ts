@@ -121,6 +121,12 @@ export class SerialMonitorViewProvider {
                     connected: this.isConnected,
                     info: this.statusInfo
                 });
+                if (this.logBuffer.length > 0) {
+                    this.panel.webview.postMessage({
+                        type: 'snapshot',
+                        lines: this.getLogLines()
+                    });
+                }
                 this.flushPendingLogs();
             }
         }, 3000);
@@ -222,6 +228,30 @@ export class SerialMonitorViewProvider {
             null,
             this.context.subscriptions
         );
+
+        this.panel.onDidChangeViewState(
+            (e) => {
+                if (e.webviewPanel.visible) {
+                    if (!this.webviewReady) {
+                        this.panel!.webview.html = this.getWebviewContent();
+                    } else {
+                        this.panel?.webview.postMessage({
+                            type: 'status',
+                            connected: this.isConnected,
+                            info: this.statusInfo
+                        });
+                        if (this.logBuffer.length > 0) {
+                            this.panel?.webview.postMessage({
+                                type: 'snapshot',
+                                lines: this.getLogLines()
+                            });
+                        }
+                    }
+                }
+            },
+            null,
+            this.context.subscriptions
+        );
     }
 
     /**
@@ -259,6 +289,12 @@ export class SerialMonitorViewProvider {
                     connected: this.isConnected,
                     info: this.statusInfo
                 });
+                if (this.logBuffer.length > 0) {
+                    this.panel.webview.postMessage({
+                        type: 'snapshot',
+                        lines: this.getLogLines()
+                    });
+                }
                 this.flushPendingLogs();
             }
         }, 3000);
@@ -325,7 +361,6 @@ export class SerialMonitorViewProvider {
         }
 
         if (this.pendingLogs.length > 0 && this.panel && this.webviewReady) {
-            this.debugLog(`[WEBVIEW] Flushing log batch lines=${this.pendingLogs.length}`);
             this.panel.webview.postMessage({
                 type: 'log',
                 lines: this.pendingLogs
@@ -607,6 +642,21 @@ export class SerialMonitorViewProvider {
         .log-line:hover { background: rgba(255,255,255,0.03); }
         .log-line .timestamp { color: var(--text-secondary); user-select: none; }
         .log-line .data { color: var(--text-primary); }
+
+        /* Virtual scrolling styles */
+        .log-line[style*="position: absolute"] {
+            box-sizing: border-box;
+            padding: 0 8px;
+        }
+
+        .log-line.search-match-line {
+            background: var(--search-active);
+            outline: 1px solid #e8b730;
+        }
+
+        #virtualScrollSpacer {
+            pointer-events: none;
+        }
 
         .search-match { background: var(--search-highlight); border-radius: 2px; padding: 0 1px; }
         .search-match.active { background: var(--search-active); outline: 1px solid #e8b730; }

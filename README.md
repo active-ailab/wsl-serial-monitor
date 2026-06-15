@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![GitHub](https://img.shields.io/badge/GitHub-Zepp--Hzanj%2Fwsl--serial--monitor-blue?logo=github)](https://github.com/Zepp-Hanzj/wsl-serial-monitor)
 
-在 VS Code 编辑器中打开 COM 串口，实时显示串口日志，支持关键字高亮过滤、日志搜索、数据发送。同时支持 **WSL** 和 **原生 Windows** 环境。
+在 VS Code 编辑器中打开 COM 串口，实时显示串口日志，支持关键字高亮过滤、日志搜索、数据发送。同时支持 **WSL** 和 **原生 Windows** 环境。提供 **Agent CLI** 用于日志分析和自动化脚本集成。
 
 > 源码：https://github.com/Zepp-Hanzj/wsl-serial-monitor
 
@@ -25,6 +25,8 @@
 | 🎨 **暗色主题** | 完美融入 VS Code 暗色主题 |
 | 💻 **跨平台** | 支持 WSL（通过 PowerShell 互操作）和原生 Windows |
 | 💾 **日志保存** | 在设置中指定保存目录后，每次点击保存会生成一个带时间戳后缀的 `.log` 文件 |
+| 🤖 **Agent 日志 CLI** | 扩展自动写入结构化 NDJSON 日志，CLI 可只读查询 `sessions/tail/search/context`，支持正则表达式、上下文查看和实时跟踪，不会抢占串口 |
+| ⚡ **虚拟滚动** | 日志超过 1000 行时自动启用虚拟滚动，大幅提升大量日志时的渲染性能 |
 
 ## 📸 使用界面
 
@@ -72,6 +74,122 @@ code --install-extension wsl-serial-monitor-0.2.12.vsix
 3. 只有默认串口打开失败时，才会扫描 COM 口并弹出选择列表
 4. 串口日志在编辑器右侧标签页中实时显示
 5. 点击保存按钮时，日志会写入设置中的目录，文件名格式为 `{prefix}_{yyyyMMdd_HHmmss}.log`
+6. 扩展会同时在工作区 `logs/` 目录写入结构化 `.ndjson` session 文件，供 CLI 和 Agent 查询
+
+### Agent 日志 CLI
+
+扩展仍然独占 COM 串口，CLI 只读取扩展落盘的结构化日志，因此可以给 GitHub Copilot、Codex、Claude Code 或 shell 脚本使用，而不会和 VS Code 串口连接冲突。
+
+发布安装后，先在 VS Code 命令面板运行：
+
+```text
+Serial: Copy Agent CLI Command
+```
+
+这会复制一个指向已安装扩展目录的稳定命令，例如：
+
+```bash
+/home/user/.vscode-server/data/User/globalStorage/roger-han.wsl-serial-monitor/bin/wsl-serial-monitor logs sessions
+```
+
+把末尾命令替换成需要的子命令即可：
+
+```bash
+.../wsl-serial-monitor logs sessions
+.../wsl-serial-monitor logs tail --session latest --lines 100
+.../wsl-serial-monitor logs search --session latest --query "panic|error|reset" --regex --json
+.../wsl-serial-monitor logs context --session latest --query watchdog --before 30 --after 80 --json
+```
+
+如果日志目录不在默认位置，显式指定日志目录：
+
+```bash
+.../wsl-serial-monitor logs search --log-dir /path/to/logs --session latest --query panic --json
+```
+
+不传 `--log-dir` 时，CLI 会优先读取扩展配置的结构化日志目录。
+
+源码开发时可以使用本仓库脚本：
+
+```bash
+npm run compile
+npm run logs -- sessions
+npm run logs -- tail --session latest --lines 100
+```
+
+NDJSON 每行是一条事件，核心字段包括 `ts`、`sessionId`、`port`、`baudRate`、`source`、`text` 和 `raw`。当前 `raw` 是已解码文本按 UTF-8 重新编码的 hex，适合检索和诊断，不等同于串口原始字节抓包。
+
+### CLI 使用场景
+
+**查看所有日志会话**：
+```bash
+.../wsl-serial-monitor logs sessions
+```
+
+**查看最新日志的最后 50 行**：
+```bash
+.../wsl-serial-monitor logs tail --session latest --lines 50
+```
+
+**实时跟踪日志（类似 `tail -f`）**：
+```bash
+.../wsl-serial-monitor logs tail --session latest --follow
+```
+
+**搜索错误和异常**：
+```bash
+.../wsl-serial-monitor logs search --session latest --query "panic|error|reset|fail" --regex --json
+```
+
+**查看 watchdog 相关日志的上下文**：
+```bash
+.../wsl-serial-monitor logs context --session latest --query watchdog --before 30 --after 80 --json
+```
+
+**搜索特定时间范围的日志**（结合 shell 工具）：
+```bash
+.../wsl-serial-monitor logs search --session latest --query "08:40:" --json | jq '.[] | select(.event.text | contains("error"))'
+```
+
+**统计特定关键字出现次数**：
+```bash
+.../wsl-serial-monitor logs search --session latest --query "SBEngine" --json | jq length
+```
+
+**查看会话统计信息**：
+```bash
+.../wsl-serial-monitor logs stats --session latest
+```
+
+**导出为 CSV 格式**：
+```bash
+.../wsl-serial-monitor logs export --session latest --format csv --output logs.csv
+```
+
+**导出为 JSON 格式（美化）**：
+```bash
+.../wsl-serial-monitor logs export --session latest --format json --pretty --output logs.json
+```
+
+**实时监控错误和异常**：
+```bash
+.../wsl-serial-monitor logs watch --session latest --query "error|panic|fail" --regex
+```
+
+**监控多个模式（不同颜色）**：
+```bash
+.../wsl-serial-monitor logs watch --session latest --pattern "error:#f44747" --pattern "warning:#ffa500" --pattern "SBEngine:#4ec9b0"
+```
+
+**只显示匹配行（过滤模式）**：
+```bash
+.../wsl-serial-monitor logs watch --session latest --query "watchdog" --filter-only
+```
+
+**检测到匹配时执行命令**：
+```bash
+.../wsl-serial-monitor logs watch --session latest --query "panic" --exec "notify-send 'Panic detected!'"
+```
 
 ## 📋 命令
 
@@ -83,6 +201,7 @@ code --install-extension wsl-serial-monitor-0.2.12.vsix
 | `WSL Serial: Send Data to Serial Port` | — | 发送数据（文本或 HEX） |
 | `WSL Serial: Clear Log View` | — | 清空日志 |
 | `WSL Serial: Save Log to File` | — | 保存当前缓冲区日志到设置目录 |
+| `WSL Serial: Copy Agent CLI Command` | — | 复制已安装扩展生成的 Agent CLI 调用命令 |
 | `WSL Serial: Open Settings` | — | 打开扩展设置 |
 
 ## 🔍 Filter 使用
@@ -121,6 +240,10 @@ code --install-extension wsl-serial-monitor-0.2.12.vsix
 | `autoReconnect` | `false` | 断开后自动重连 |
 | `saveDirectory` | `""` | 日志默认保存目录；为空时使用当前工作区根目录 |
 | `saveFilePrefix` | `serial_log` | 日志文件名前缀，最终格式为 `{prefix}_{yyyyMMdd_HHmmss}.log` |
+| `agentLogDirectory` | `logs` | 结构化 Agent 日志目录；相对路径基于当前工作区根目录 |
+| `logRotationMaxAgeDays` | `30` | 自动删除超过此天数的 Agent 日志文件 |
+| `logRotationMaxFiles` | `100` | 最多保留的 Agent 日志文件数量 |
+| `logRotationMaxTotalSizeMB` | `500` | Agent 日志目录最大总大小（MB） |
 
 ## 🏗 工作原理
 
@@ -221,6 +344,15 @@ New-NetFirewallRule -DisplayName "WSL Serial Monitor" -Direction Inbound -LocalP
 - WSL: 检查 `/etc/wsl.conf` 中 `interopEnabled=true`
 - 可尝试使用完整路径：设置 `wsl-serial-monitor.powershellPath` 为 `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
 
+### Agent CLI 找不到日志
+
+- 先确认扩展已经连接过串口，并且 Output 面板中出现过 `[LOG] Session ... -> ...`
+- 发布安装版先运行命令 `Serial: Copy Agent CLI Command`，用复制出来的命令查询 session
+- 源码开发版可以在仓库根目录运行 `npm run logs -- sessions`
+- 如果是在 Extension Development Host 中调试，确认 `.vscode/launch.json` 的 `args` 包含 `--folder-uri=${workspaceFolder}`，否则调试窗口可能没有 workspace，结构化日志会写到 VS Code global storage；CLI 不传 `--log-dir` 时会自动尝试读取该目录
+- 如果日志目录不在默认位置，显式指定路径：`.../wsl-serial-monitor logs sessions --log-dir /absolute/path/to/logs`
+- Agent 应调用 Agent CLI 读取日志，不应直接打开 COM 口
+
 ## 🛠 从源码构建
 
 ```bash
@@ -233,6 +365,12 @@ npm install
 
 # 编译
 npm run compile
+
+# 测试
+npm test
+
+# 查询结构化 Agent 日志
+npm run logs -- sessions
 
 # 打包
 npm install -g @vscode/vsce

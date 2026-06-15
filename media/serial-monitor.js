@@ -39,6 +39,17 @@ try {
             return Math.max(maxId, typeof item?.id === 'number' ? item.id : -1);
         }, -1) + 1;
 
+        // ---- Virtual Scrolling ----
+        const VIRTUAL_SCROLL_THRESHOLD = 1000; // Enable virtual scrolling when lines exceed this
+        const LINE_HEIGHT = 20; // Estimated line height in pixels
+        const OVERSCAN = 10; // Number of extra lines to render above/below viewport
+        let virtualScrollEnabled = false;
+        let allLogLines = []; // Store all log line data
+        let allLogLineBytes = []; // Store byte sizes for each line
+        let renderStartIndex = 0;
+        let renderEndIndex = 0;
+        let scrollRAF = null; // RequestAnimationFrame ID for scroll handling
+
         function getLineByteSize(text) {
             return new TextEncoder().encode(text + '\n').length;
         }
@@ -246,8 +257,19 @@ try {
 
         function applyFiltersToExisting() {
             const active = getActiveFilters();
-            const allLines = logContent.querySelectorAll('.log-line');
             let visibleCount = 0;
+
+            if (virtualScrollEnabled) {
+                // For virtual scrolling, just re-render visible lines
+                renderVisibleLines();
+                visibleCount = filterOnly ? 
+                    allLogLines.filter(text => matchFilters(text).length > 0).length : 
+                    allLogLines.length;
+                filterCountEl.textContent = active.length > 0 ? visibleCount + '/' + allLogLines.length : String(allLogLines.length);
+                return;
+            }
+
+            const allLines = logContent.querySelectorAll('.log-line');
 
             for (const line of allLines) {
                 const dataSpan = line.querySelector('.data');
@@ -279,6 +301,127 @@ try {
             return 'rgba(' + parseInt(hex.slice(1, 3), 16) + ',' + parseInt(hex.slice(3, 5), 16) + ',' + parseInt(hex.slice(5, 7), 16) + ',' + alpha + ')';
         }
 
+        // ---- Virtual Scrolling Functions ----
+        function createLogLineElement(text, lineIndex) {
+            const div = document.createElement('div');
+            div.className = 'log-line';
+            div.setAttribute('data-index', String(lineIndex));
+            const lineByteSize = allLogLineBytes[lineIndex] || getLineByteSize(text);
+            div.setAttribute('data-bytes', String(lineByteSize));
+
+            if (showTimestamp) {
+                const now = new Date();
+                const ts = String(now.getHours()).padStart(2, '0') + ':' +
+                           String(now.getMinutes()).padStart(2, '0') + ':' +
+                           String(now.getSeconds()).padStart(2, '0') + '.' +
+                           String(now.getMilliseconds()).padStart(3, '0');
+                const tsSpan = document.createElement('span');
+                tsSpan.className = 'timestamp'; tsSpan.textContent = '[' + ts + '] ';
+                div.appendChild(tsSpan);
+            }
+
+            const dataSpan = document.createElement('span');
+            dataSpan.className = 'data'; dataSpan.textContent = text;
+
+            const active = getActiveFilters();
+            if (active.length > 0) {
+                const matched = matchFilters(text);
+                if (matched.length > 0) {
+                    dataSpan.style.color = matched[0].color;
+                    dataSpan.style.background = hexToRgba(matched[0].color, 0.12);
+                    dataSpan.style.borderRadius = '2px'; dataSpan.style.padding = '0 2px';
+                } else if (filterOnly) { div.style.display = 'none'; }
+            }
+
+            div.appendChild(dataSpan);
+            return div;
+        }
+
+        function updateVirtualScrollHeight() {
+            // Update the spacer height to reflect total content
+            const spacer = document.getElementById('virtualScrollSpacer');
+            if (spacer) {
+                spacer.style.height = (allLogLines.length * LINE_HEIGHT) + 'px';
+            }
+        }
+
+        function renderVisibleLines() {
+            if (!virtualScrollEnabled || allLogLines.length === 0) return;
+
+            const scrollTop = logContent.scrollTop;
+            const viewportHeight = logContent.clientHeight;
+
+            // Calculate visible range
+            const startIndex = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT) - OVERSCAN);
+            const endIndex = Math.min(allLogLines.length, Math.ceil((scrollTop + viewportHeight) / LINE_HEIGHT) + OVERSCAN);
+
+            // Skip if range hasn't changed
+            if (startIndex === renderStartIndex && endIndex === renderEndIndex) return;
+
+            renderStartIndex = startIndex;
+            renderEndIndex = endIndex;
+
+            // Clear current content (except spacer and welcome)
+            const spacer = document.getElementById('virtualScrollSpacer');
+            const children = Array.from(logContent.children);
+            for (const child of children) {
+                if (child !== welcome && child !== spacer) {
+                    logContent.removeChild(child);
+                }
+            }
+
+            // Render visible lines
+            const frag = document.createDocumentFragment();
+            for (let i = startIndex; i < endIndex; i++) {
+                const line = createLogLineElement(allLogLines[i], i);
+                line.style.position = 'absolute';
+                line.style.top = (i * LINE_HEIGHT) + 'px';
+                line.style.width = '100%';
+                frag.appendChild(line);
+            }
+
+            // Insert before spacer
+            if (spacer) {
+                logContent.insertBefore(frag, spacer);
+            } else {
+                logContent.appendChild(frag);
+            }
+        }
+
+        function setupVirtualScroll() {
+            // Create spacer element
+            let spacer = document.getElementById('virtualScrollSpacer');
+            if (!spacer) {
+                spacer = document.createElement('div');
+                spacer.id = 'virtualScrollSpacer';
+                spacer.style.width = '1px';
+                spacer.style.pointerEvents = 'none';
+                logContent.appendChild(spacer);
+            }
+
+            // Set logContent to relative positioning for absolute children
+            logContent.style.position = 'relative';
+
+            // Add scroll listener with RAF throttling
+            logContent.addEventListener('scroll', () => {
+                if (scrollRAF) cancelAnimationFrame(scrollRAF);
+                scrollRAF = requestAnimationFrame(() => {
+                    renderVisibleLines();
+                    scrollRAF = null;
+                });
+            });
+
+            virtualScrollEnabled = true;
+            renderVisibleLines();
+        }
+
+        function teardownVirtualScroll() {
+            virtualScrollEnabled = false;
+            const spacer = document.getElementById('virtualScrollSpacer');
+            if (spacer) spacer.remove();
+            logContent.style.position = '';
+        }
+
         // ---- Message handling ----
         window.addEventListener('message', (event) => {
             const msg = event.data;
@@ -295,66 +438,57 @@ try {
             if (welcome) { welcome.style.display = 'none'; }
             if (paused) return;
 
-            const active = getActiveFilters();
-            const frag = document.createDocumentFragment();
+            // Store line data for virtual scrolling
             for (const text of lines) {
-                const div = document.createElement('div');
-                div.className = 'log-line';
                 const lineByteSize = getLineByteSize(text);
-                div.setAttribute('data-bytes', String(lineByteSize));
-
-                if (showTimestamp) {
-                    const now = new Date();
-                    const ts = String(now.getHours()).padStart(2, '0') + ':' +
-                               String(now.getMinutes()).padStart(2, '0') + ':' +
-                               String(now.getSeconds()).padStart(2, '0') + '.' +
-                               String(now.getMilliseconds()).padStart(3, '0');
-                    const tsSpan = document.createElement('span');
-                    tsSpan.className = 'timestamp'; tsSpan.textContent = '[' + ts + '] ';
-                    div.appendChild(tsSpan);
-                }
-
-                const dataSpan = document.createElement('span');
-                dataSpan.className = 'data'; dataSpan.textContent = text;
-
-                if (active.length > 0) {
-                    const matched = matchFilters(text);
-                    if (matched.length > 0) {
-                        dataSpan.style.color = matched[0].color;
-                        dataSpan.style.background = hexToRgba(matched[0].color, 0.12);
-                        dataSpan.style.borderRadius = '2px'; dataSpan.style.padding = '0 2px';
-                    } else if (filterOnly) { div.style.display = 'none'; }
-                }
-
-                div.appendChild(dataSpan);
-                frag.appendChild(div);
+                allLogLines.push(text);
+                allLogLineBytes.push(lineByteSize);
                 lineCount++;
                 displayedBufferBytes += lineByteSize;
             }
 
-            logContent.appendChild(frag);
-
-            while (displayedBufferBytes > maxBufferBytes && logContent.firstChild) {
-                if (logContent.firstChild === welcome) {
-                    if (logContent.children.length <= 1) break;
-                    const firstLine = logContent.children[1];
-                    displayedBufferBytes -= Number(firstLine?.getAttribute('data-bytes') || '0');
-                    logContent.removeChild(firstLine);
-                } else {
-                    const firstNode = logContent.firstChild;
-                    displayedBufferBytes -= Number(firstNode?.getAttribute?.('data-bytes') || '0');
-                    logContent.removeChild(firstNode);
-                }
+            // Trim buffer if needed
+            while (displayedBufferBytes > maxBufferBytes && allLogLines.length > 0) {
+                const removedBytes = allLogLineBytes.shift() || 0;
+                allLogLines.shift();
+                displayedBufferBytes -= removedBytes;
                 lineCount--;
             }
 
-            if (autoScroll) { logContent.scrollTop = logContent.scrollHeight; }
+            // Check if we should enable virtual scrolling
+            if (allLogLines.length > VIRTUAL_SCROLL_THRESHOLD && !virtualScrollEnabled) {
+                setupVirtualScroll();
+            }
+
+            // Render based on mode
+            if (virtualScrollEnabled) {
+                updateVirtualScrollHeight();
+                renderVisibleLines();
+                if (autoScroll) { logContent.scrollTop = logContent.scrollHeight; }
+            } else {
+                // Original rendering for small datasets
+                const active = getActiveFilters();
+                const frag = document.createDocumentFragment();
+                for (const text of lines) {
+                    const div = createLogLineElement(text, allLogLines.length - lines.length + lines.indexOf(text));
+                    frag.appendChild(div);
+                }
+                logContent.appendChild(frag);
+
+                if (autoScroll) { logContent.scrollTop = logContent.scrollHeight; }
+            }
+
             if (dataCounterEl) { dataCounterEl.textContent = lineCount; }
         }
 
         function doClear() {
             logContent.innerHTML = '';
             displayedBufferBytes = 0;
+            allLogLines = [];
+            allLogLineBytes = [];
+            renderStartIndex = 0;
+            renderEndIndex = 0;
+            teardownVirtualScroll();
             if (welcome) { logContent.appendChild(welcome); welcome.style.display = ''; }
             lineCount = 0; searchMatches = []; currentSearchIndex = -1;
             searchCountEl.textContent = ''; filterCountEl.textContent = '';
@@ -411,6 +545,7 @@ try {
 
         // ---- Search ----
         let searchDebounce = undefined;
+        let searchMatchIndices = []; // Store indices of matching lines for virtual scroll
         function onSearchInput() { persistUiState(); clearTimeout(searchDebounce); searchDebounce = setTimeout(performSearch, 200); }
 
         function performSearch() {
@@ -420,12 +555,33 @@ try {
                 parent.replaceChild(document.createTextNode(el.textContent), el);
                 parent.normalize();
             });
-            searchMatches = []; currentSearchIndex = -1; searchCountEl.textContent = '';
+            searchMatches = []; searchMatchIndices = []; currentSearchIndex = -1; searchCountEl.textContent = '';
             if (!query) return;
 
             let regex = null;
             if (searchRegex) {
                 try { regex = new RegExp(query, 'gi'); } catch (e) { searchCountEl.textContent = 'Invalid regex'; return; }
+            }
+
+            if (virtualScrollEnabled) {
+                // Search in allLogLines array for virtual scrolling
+                for (let i = 0; i < allLogLines.length; i++) {
+                    const text = allLogLines[i];
+                    let isMatch = false;
+                    if (regex) {
+                        regex.lastIndex = 0;
+                        isMatch = regex.test(text);
+                    } else {
+                        isMatch = text.toLowerCase().includes(query.toLowerCase());
+                    }
+                    if (isMatch) {
+                        searchMatchIndices.push(i);
+                    }
+                }
+                searchMatches = searchMatchIndices; // For compatibility with navigateSearch
+                searchCountEl.textContent = searchMatchIndices.length > 0 ? '0/' + searchMatchIndices.length : 'No results';
+                if (searchMatchIndices.length > 0) { navigateSearch(0); }
+                return;
             }
 
             const dataSpans = logContent.querySelectorAll('.data');
@@ -470,6 +626,28 @@ try {
 
         function navigateSearch(index) {
             if (searchMatches.length === 0) return;
+
+            if (virtualScrollEnabled && searchMatchIndices.length > 0) {
+                // Virtual scroll: navigate by line index
+                if (currentSearchIndex >= 0) {
+                    // Remove highlight from previous match
+                    const prevLine = logContent.querySelector(`.log-line[data-index="${searchMatchIndices[currentSearchIndex]}"]`);
+                    if (prevLine) prevLine.classList.remove('search-match-line');
+                }
+                currentSearchIndex = ((index % searchMatchIndices.length) + searchMatchIndices.length) % searchMatchIndices.length;
+                const targetIndex = searchMatchIndices[currentSearchIndex];
+                // Scroll to the target line
+                logContent.scrollTop = targetIndex * LINE_HEIGHT - logContent.clientHeight / 2;
+                // Re-render to show the highlighted line
+                renderVisibleLines();
+                // Add highlight to current match
+                const currentLine = logContent.querySelector(`.log-line[data-index="${targetIndex}"]`);
+                if (currentLine) currentLine.classList.add('search-match-line');
+                searchCountEl.textContent = (currentSearchIndex + 1) + '/' + searchMatchIndices.length;
+                return;
+            }
+
+            // Original behavior for non-virtual scroll
             if (currentSearchIndex >= 0 && currentSearchIndex < searchMatches.length) { searchMatches[currentSearchIndex].classList.remove('active'); }
             currentSearchIndex = ((index % searchMatches.length) + searchMatches.length) % searchMatches.length;
             searchMatches[currentSearchIndex].classList.add('active');

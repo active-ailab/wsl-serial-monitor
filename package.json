@@ -1,8 +1,8 @@
 {
   "name": "wsl-serial-monitor",
   "displayName": "Serial Monitor (WSL & Windows)",
-  "description": "Open and monitor COM serial ports from WSL or native Windows, with real-time log display, color filters, and search in an editor tab.",
-  "version": "0.2.12",
+  "description": "Open and monitor COM serial ports from WSL or native Windows, with real-time log display, color filters, search in an editor tab, and Agent CLI for log analysis.",
+  "version": "0.3.0",
   "publisher": "Roger-Han",
   "author": {
     "name": "Roger-Han"
@@ -28,14 +28,25 @@
     "embedded",
     "debug",
     "firmware",
-    "uart"
+    "uart",
+    "cli",
+    "log analysis",
+    "agent",
+    "ndjson"
   ],
   "bugs": {
     "url": "https://github.com/Zepp-Hanzj/wsl-serial-monitor/issues"
   },
   "homepage": "https://github.com/Zepp-Hanzj/wsl-serial-monitor#readme",
-  "activationEvents": [],
+  "activationEvents": [
+    "onView:serial-monitor-panel",
+    "onCommand:wsl-serial-monitor.open",
+    "onCommand:wsl-serial-monitor.listPorts"
+  ],
   "main": "./out/extension.js",
+  "bin": {
+    "wsl-serial-monitor": "./out/cli.js"
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -90,6 +101,12 @@
         "icon": "$(save)"
       },
       {
+        "command": "wsl-serial-monitor.copyAgentCliCommand",
+        "title": "Serial: Copy Agent CLI Command",
+        "category": "Serial",
+        "icon": "$(terminal)"
+      },
+      {
         "command": "wsl-serial-monitor.openSettings",
         "title": "Serial: Open Settings",
         "category": "Serial",
@@ -115,6 +132,11 @@
         },
         {
           "command": "wsl-serial-monitor.clearLog",
+          "when": "view == serial-monitor-panel",
+          "group": "navigation"
+        },
+        {
+          "command": "wsl-serial-monitor.copyAgentCliCommand",
           "when": "view == serial-monitor-panel",
           "group": "navigation"
         },
@@ -232,6 +254,32 @@
           "type": "string",
           "default": "serial_log",
           "description": "Prefix for saved log filenames. Full name: {prefix}_{yyyyMMdd_HHmmss}.log"
+        },
+        "wsl-serial-monitor.agentLogDirectory": {
+          "type": "string",
+          "default": "logs",
+          "markdownDescription": "Directory for structured NDJSON agent logs. Relative paths resolve from the workspace root."
+        },
+        "wsl-serial-monitor.logRotationMaxAgeDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 365,
+          "description": "Delete agent log files older than this many days."
+        },
+        "wsl-serial-monitor.logRotationMaxFiles": {
+          "type": "number",
+          "default": 100,
+          "minimum": 10,
+          "maximum": 1000,
+          "description": "Maximum number of agent log files to keep."
+        },
+        "wsl-serial-monitor.logRotationMaxTotalSizeMB": {
+          "type": "number",
+          "default": 500,
+          "minimum": 50,
+          "maximum": 5000,
+          "description": "Maximum total size of agent log directory in MB."
         }
       }
     },
@@ -246,6 +294,8 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
+    "logs": "node ./out/cli.js logs",
+    "test": "npm run compile && node --test test/*.test.js",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts"
   },
