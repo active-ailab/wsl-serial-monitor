@@ -126,6 +126,8 @@ export class SerialMonitorViewProvider {
                         type: 'snapshot',
                         lines: this.getLogLines()
                     });
+                    // Clear pending logs since snapshot already contains all data
+                    this.pendingLogs = [];
                 }
                 this.flushPendingLogs();
             }
@@ -156,6 +158,8 @@ export class SerialMonitorViewProvider {
                                 type: 'snapshot',
                                 lines: this.getLogLines()
                             });
+                            // Clear pending logs since snapshot already contains all data
+                            this.pendingLogs = [];
                         }
                         this.flushPendingLogs();
                         break;
@@ -203,6 +207,8 @@ export class SerialMonitorViewProvider {
                                 type: 'snapshot',
                                 lines: this.getLogLines()
                             });
+                            // Clear pending logs since snapshot already contains all data
+                            this.pendingLogs = [];
                         }
                         break;
                     case 'save':
@@ -245,6 +251,8 @@ export class SerialMonitorViewProvider {
                                 type: 'snapshot',
                                 lines: this.getLogLines()
                             });
+                            // Clear pending logs since snapshot already contains all data
+                            this.pendingLogs = [];
                         }
                     }
                 }
@@ -294,6 +302,8 @@ export class SerialMonitorViewProvider {
                         type: 'snapshot',
                         lines: this.getLogLines()
                     });
+                    // Clear pending logs since snapshot already contains all data
+                    this.pendingLogs = [];
                 }
                 this.flushPendingLogs();
             }
