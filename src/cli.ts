@@ -10,7 +10,9 @@ import {
     readEvents,
     resolveSession,
     searchEvents,
+    searchEventsStreaming,
     tailEvents,
+    tailEventsFromFile,
     computeStats,
     exportEvents,
     ExportFormat
@@ -81,7 +83,9 @@ function handleSessions(logDir: string, args: ParsedArgs): void {
 async function handleTail(logDir: string, args: ParsedArgs): Promise<void> {
     const session = resolveSession(logDir, getString(args, 'session', 'latest'));
     const lines = getNumber(args, 'lines', getNumber(args, 'limit', 100));
-    const events = tailEvents(readEvents(session.filePath), lines);
+    
+    // Use optimized tail from file (reads only last N lines)
+    const events = tailEventsFromFile(session.filePath, lines);
 
     if (getBoolean(args, 'json') && !getBoolean(args, 'follow')) {
         printJson(events);
@@ -97,12 +101,14 @@ async function handleTail(logDir: string, args: ParsedArgs): Promise<void> {
 function handleSearch(logDir: string, args: ParsedArgs): void {
     const query = requireQuery(args);
     const session = resolveSession(logDir, getString(args, 'session', 'latest'));
-    const events = readEvents(session.filePath);
-    const matches = searchEvents(
-        events,
+    const limit = getNumber(args, 'limit', 50);
+    
+    // Use streaming search with early termination
+    const matches = searchEventsStreaming(
+        session.filePath,
         query,
         getBoolean(args, 'regex'),
-        getNumber(args, 'limit', 50)
+        limit
     );
 
     if (getBoolean(args, 'json')) {

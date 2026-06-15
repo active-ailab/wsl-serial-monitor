@@ -330,10 +330,11 @@ export class SerialMonitorViewProvider {
         // Remaining partial data stays in lineBuffer for next chunk
         this.trimLogBuffer(maxBufferBytes);
 
+        // Flush at 60fps (16ms) for smoother updates
         if (!this.flushTimer) {
             this.flushTimer = setTimeout(() => {
                 this.flushPendingLogs();
-            }, 50);
+            }, 16);
         }
     }
 
@@ -573,6 +574,12 @@ export class SerialMonitorViewProvider {
             border-color: var(--danger-bg);
         }
         .btn-danger:hover { background: var(--danger-hover); }
+
+        .btn.paused {
+            background: var(--search-active);
+            border-color: #e8b730;
+            color: #000;
+        }
 
         .search-box {
             display: flex;

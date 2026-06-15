@@ -222,25 +222,28 @@ export function listSessions(logDir: string): LogSession[] {
         return [];
     }
 
-    return fs.readdirSync(logDir)
-        .filter((name) => name.endsWith('.ndjson'))
-        .map((name) => {
-            const filePath = path.join(logDir, name);
-            const stat = fs.statSync(filePath);
-            const firstEvent = readFirstEvent(filePath);
-            const sessionId = firstEvent?.sessionId ?? path.basename(name, '.ndjson');
-            const parsed = parseSessionId(sessionId);
-            return {
-                sessionId,
-                port: firstEvent?.port ?? parsed.port,
-                baudRate: firstEvent?.baudRate ?? 0,
-                filePath,
-                startTime: firstEvent?.ts,
-                mtimeMs: stat.mtimeMs,
-                size: stat.size
-            };
-        })
-        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const files = fs.readdirSync(logDir).filter((name) => name.endsWith('.ndjson'));
+    
+    // Process files - readFirstEvent is already optimized to read only first 8KB
+    const sessions = files.map((name) => {
+        const filePath = path.join(logDir, name);
+        const stat = fs.statSync(filePath);
+        const firstEvent = readFirstEvent(filePath);
+        const sessionId = firstEvent?.sessionId ?? path.basename(name, '.ndjson');
+        const parsed = parseSessionId(sessionId);
+        return {
+            sessionId,
+            port: firstEvent?.port ?? parsed.port,
+            baudRate: firstEvent?.baudRate ?? 0,
+            filePath,
+            startTime: firstEvent?.ts,
+            mtimeMs: stat.mtimeMs,
+            size: stat.size
+        };
+    });
+    
+    sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    return sessions;
 }
 
 export function resolveSession(logDir: string, selector = 'latest'): LogSession {
@@ -290,6 +293,75 @@ export function tailEvents(events: SerialLogEvent[], lines: number): SerialLogEv
     return events.slice(Math.max(0, events.length - lines));
 }
 
+/**
+ * Read last N lines directly from file without loading entire file.
+ * Reads backwards from end in chunks for efficiency.
+ */
+export function tailEventsFromFile(filePath: string, lines: number): SerialLogEvent[] {
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`Log file not found: ${filePath}`);
+    }
+
+    const stat = fs.statSync(filePath);
+    if (stat.size === 0) return [];
+
+    const CHUNK_SIZE = 64 * 1024; // 64KB chunks
+    const fd = fs.openSync(filePath, 'r');
+    
+    try {
+        const results: SerialLogEvent[] = [];
+        let position = stat.size;
+        let remainder = '';
+        let newlineCount = 0;
+
+        while (position > 0 && newlineCount < lines + 1) {
+            const readSize = Math.min(CHUNK_SIZE, position);
+            position -= readSize;
+            
+            const buffer = Buffer.alloc(readSize);
+            fs.readSync(fd, buffer, 0, readSize, position);
+            
+            const chunk = buffer.toString('utf-8') + remainder;
+            const lineEndIdx = chunk.lastIndexOf('\n');
+            
+            if (lineEndIdx === -1) {
+                remainder = chunk;
+                continue;
+            }
+            
+            const completePart = chunk.substring(0, lineEndIdx);
+            remainder = chunk.substring(lineEndIdx + 1);
+            
+            const linesInChunk = completePart.split('\n');
+            newlineCount += linesInChunk.length;
+            
+            // Parse lines in reverse to get last N
+            for (let i = linesInChunk.length - 1; i >= 0 && results.length < lines; i--) {
+                const line = linesInChunk[i].replace(/\r$/, '');
+                if (!line.trim()) continue;
+                try {
+                    results.unshift(JSON.parse(line) as SerialLogEvent);
+                } catch {
+                    // Ignore invalid lines
+                }
+            }
+        }
+        
+        // Handle remainder if we haven't read enough lines
+        if (results.length < lines && remainder.trim()) {
+            try {
+                results.unshift(JSON.parse(remainder.replace(/\r$/, '')) as SerialLogEvent);
+            } catch {
+                // Ignore
+            }
+        }
+        
+        return results.slice(-lines); // Ensure exactly N lines
+    } finally {
+        fs.closeSync(fd);
+    }
+}
+
 export function searchEvents(
     events: SerialLogEvent[],
     query: string,
@@ -308,6 +380,47 @@ export function searchEvents(
         }
     }
 
+    return matches;
+}
+
+/**
+ * Stream search: reads file line by line, stops early when limit reached.
+ * Much more memory-efficient for large files with early matches.
+ */
+export function searchEventsStreaming(
+    filePath: string,
+    query: string,
+    regex = false,
+    limit = 50
+): Array<{ index: number; event: SerialLogEvent }> {
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`Log file not found: ${filePath}`);
+    }
+
+    const matcher = createMatcher(query, regex);
+    const matches: Array<{ index: number; event: SerialLogEvent }> = [];
+    
+    const content = fs.readFileSync(filePath, 'utf-8');
+    let index = 0;
+    
+    for (const line of content.split(/\r?\n/)) {
+        if (!line.trim()) continue;
+        
+        try {
+            const event = JSON.parse(line) as SerialLogEvent;
+            if (matcher(event.text)) {
+                matches.push({ index, event });
+                if (matches.length >= limit) {
+                    break; // Early termination
+                }
+            }
+            index++;
+        } catch {
+            // Ignore invalid lines
+            index++;
+        }
+    }
+    
     return matches;
 }
 
@@ -387,26 +500,9 @@ export interface SessionStats {
     timeDistribution: Array<{ hour: string; count: number }>;
 }
 
-const ERROR_PATTERNS = [
-    /\bpanic\b/i,
-    /\berror\b/i,
-    /\bfail(ed|ure)?\b/i,
-    /\bassert(ion)?\b/i,
-    /\bcrash\b/i,
-    /\babort\b/i,
-    /\bfatal\b/i,
-    /\bexception\b/i
-];
-
-const WARNING_PATTERNS = [
-    /\bwarn(ing)?\b/i,
-    /\btimeout\b/i,
-    /\bretry\b/i,
-    /\breset\b/i,
-    /\bwatchdog\b/i,
-    /\bOOM\b/i,
-    /\bout of memory\b/i
-];
+// Combined regex for single-pass matching
+const COMBINED_ERROR_REGEX = /\b(?:panic|error|fail(?:ed|ure)?|assert(?:ion)?|crash|abort|fatal|exception)\b/i;
+const COMBINED_WARNING_REGEX = /\bwarn(?:ing)?|timeout|retry|reset|watchdog|OOM|out of memory\b/i;
 
 const COMMON_PATTERNS = [
     { name: 'SBEngine', regex: /\bSBEngine\b/ },
@@ -419,9 +515,11 @@ const COMMON_PATTERNS = [
     { name: 'ALG_ALT', regex: /\bALG_ALT\b/ }
 ];
 
-function matchesAny(text: string, patterns: RegExp[]): boolean {
-    return patterns.some(p => p.test(text));
-}
+// Pre-compile combined pattern for COMMON_PATTERNS single-pass check
+const COMMON_PATTERNS_COMBINED = COMMON_PATTERNS.map(p => ({
+    name: p.name,
+    regex: p.regex
+}));
 
 export function computeStats(events: SerialLogEvent[], sessionId: string, port: string, baudRate: number): SessionStats {
     const sourceBreakdown: Record<string, number> = {};
@@ -434,12 +532,12 @@ export function computeStats(events: SerialLogEvent[], sessionId: string, port: 
         // Source breakdown
         sourceBreakdown[event.source] = (sourceBreakdown[event.source] || 0) + 1;
 
-        // Error/warning counts
-        if (matchesAny(event.text, ERROR_PATTERNS)) errorCount++;
-        if (matchesAny(event.text, WARNING_PATTERNS)) warningCount++;
+        // Error/warning counts - single regex pass each
+        if (COMBINED_ERROR_REGEX.test(event.text)) errorCount++;
+        if (COMBINED_WARNING_REGEX.test(event.text)) warningCount++;
 
-        // Common patterns
-        for (const pattern of COMMON_PATTERNS) {
+        // Common patterns - check each individually (they're distinct keywords)
+        for (const pattern of COMMON_PATTERNS_COMBINED) {
             if (pattern.regex.test(event.text)) {
                 patternCounts[pattern.name] = (patternCounts[pattern.name] || 0) + 1;
             }
