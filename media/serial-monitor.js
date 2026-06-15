@@ -331,7 +331,9 @@ try {
             let visibleCount = 0;
 
             if (virtualScrollEnabled) {
-                // For virtual scrolling, just re-render visible lines
+                // Force re-render by resetting cached range
+                renderStartIndex = -1;
+                renderEndIndex = -1;
                 renderVisibleLines();
                 visibleCount = filterOnly ? 
                     allLogLines.filter(text => matchFilters(text).length > 0).length : 
