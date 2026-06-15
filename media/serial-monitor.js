@@ -519,8 +519,8 @@ try {
                 logContent.appendChild(spacer);
             }
 
-            // Set logContent to relative positioning for absolute children
-            logContent.style.position = 'relative';
+            // Don't override position - keep CSS absolute positioning intact
+            // The absolute positioned children will work within the absolute parent
 
             // Add scroll listener with RAF throttling
             logContent.addEventListener('scroll', () => {
@@ -545,7 +545,7 @@ try {
             activeElements.clear();
             const spacer = document.getElementById('virtualScrollSpacer');
             if (spacer) spacer.remove();
-            logContent.style.position = '';
+            // Don't clear position - keep CSS styling intact
         }
 
         // ---- Message handling ----
