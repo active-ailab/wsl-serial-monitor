@@ -603,24 +603,21 @@ try {
                     allLogLineBytes.splice(0, removeCount);
                     displayedBufferBytes -= removedBytes;
                     lineCount -= removeCount;
-                    // Adjust virtual scroll indices
-                    renderStartIndex = Math.max(-1, renderStartIndex - removeCount);
-                    renderEndIndex = Math.max(-1, renderEndIndex - removeCount);
-                    // Re-index active elements
-                    const newActive = new Map();
-                    for (const [idx, el] of activeElements) {
-                        const newIdx = idx - removeCount;
-                        if (newIdx >= 0) {
-                            newActive.set(newIdx, el);
-                        } else {
-                            el.remove();
-                            releaseElement(el);
-                        }
+                    // Force full re-render after trim: active elements have stale
+                    // style.top values from before the splice, and the range check
+                    // in renderVisibleLines() would skip the update if we only
+                    // adjusted the cached indices. Reset to -1 so the next call
+                    // always rebuilds the visible range with correct positions.
+                    renderStartIndex = -1;
+                    renderEndIndex = -1;
+                    // Release all active elements — their style.top positions are
+                    // stale after the splice. renderVisibleLines() will recreate
+                    // them with correct positions since we reset the range to -1.
+                    for (const [, el] of activeElements) {
+                        el.remove();
+                        releaseElement(el);
                     }
                     activeElements.clear();
-                    for (const [idx, el] of newActive) {
-                        activeElements.set(idx, el);
-                    }
                 }
             }
 
