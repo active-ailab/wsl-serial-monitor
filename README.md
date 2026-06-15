@@ -1,6 +1,6 @@
 # Serial Monitor (WSL & Windows)
 
-[![Version](https://img.shields.io/badge/version-0.2.12-blue)](https://marketplace.visualstudio.com/items?itemName=Roger-Han.wsl-serial-monitor)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue)](https://marketplace.visualstudio.com/items?itemName=Roger-Han.wsl-serial-monitor)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![GitHub](https://img.shields.io/badge/GitHub-Zepp--Hzanj%2Fwsl--serial--monitor-blue?logo=github)](https://github.com/Zepp-Hanzj/wsl-serial-monitor)
 
@@ -64,7 +64,7 @@ code --install-extension Roger-Han.wsl-serial-monitor
 **方式三：从 VSIX 安装**
 
 ```bash
-code --install-extension wsl-serial-monitor-0.2.12.vsix
+code --install-extension wsl-serial-monitor-0.3.0.vsix
 ```
 
 ### 使用
@@ -377,12 +377,23 @@ npm install -g @vscode/vsce
 vsce package
 
 # 安装
-code --install-extension wsl-serial-monitor-0.2.10.vsix
+code --install-extension wsl-serial-monitor-0.3.0.vsix
 ```
 
 ### 开发调试
 
 在 VS Code 中打开项目文件夹，按 `F5` 启动扩展开发主机进行调试。
+
+## 📝 更新日志
+
+### v0.3.0
+
+- **Agent Log CLI**：新增命令行工具，支持 `sessions`、`tail`、`search`、`context`、`stats`、`export`、`watch` 子命令，可只读查询结构化 NDJSON 日志，不抢占串口
+- **结构化日志存储**：扩展自动写入 NDJSON 格式的 session 日志文件，包含时间戳、会话 ID、端口、波特率等元数据
+- **虚拟滚动**：日志超过 1000 行时自动启用虚拟滚动，大幅提升大量日志时的渲染性能
+- **日志轮转**：支持按天数、文件数量、总大小自动清理过期日志
+- **AI Agent 集成**：新增 Agent CLI 计划文档，支持 GitHub Copilot、Codex、Claude Code 等 AI 工具读取日志进行分析
+- **单元测试**：新增 `logStore` 和 `agent-log-cli` 测试用例
 
 ##  许可证
 
