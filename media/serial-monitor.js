@@ -519,8 +519,14 @@ try {
                 logContent.appendChild(spacer);
             }
 
-            // Don't override position - keep CSS absolute positioning intact
-            // The absolute positioned children will work within the absolute parent
+            // Switch to relative positioning for virtual scroll children
+            // but preserve height with 100%
+            logContent.style.position = 'relative';
+            logContent.style.height = '100%';
+            logContent.style.top = '0';
+            logContent.style.left = '0';
+            logContent.style.right = '0';
+            logContent.style.bottom = '';
 
             // Add scroll listener with RAF throttling
             logContent.addEventListener('scroll', () => {
@@ -545,7 +551,13 @@ try {
             activeElements.clear();
             const spacer = document.getElementById('virtualScrollSpacer');
             if (spacer) spacer.remove();
-            // Don't clear position - keep CSS styling intact
+            // Restore original positioning
+            logContent.style.position = '';
+            logContent.style.height = '';
+            logContent.style.top = '';
+            logContent.style.left = '';
+            logContent.style.right = '';
+            logContent.style.bottom = '';
         }
 
         // ---- Message handling ----
