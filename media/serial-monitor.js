@@ -42,7 +42,8 @@ try {
 
         // ---- Virtual Scrolling ----
         const VIRTUAL_SCROLL_THRESHOLD = 5000; // Higher threshold for smoother transition
-        const LINE_HEIGHT = 20; // Estimated line height in pixels
+        let LINE_HEIGHT = 20; // Default estimate; measured from DOM after first render
+        let lineHeightMeasured = false;
         const OVERSCAN = 20; // More overscan for smoother scrolling
         let virtualScrollEnabled = false;
         let allLogLines = []; // Store all log line data
@@ -62,6 +63,19 @@ try {
 
         function getLineByteSize(text) {
             return new TextEncoder().encode(text + '\n').length;
+        }
+
+        function measureLineHeight() {
+            if (lineHeightMeasured) return;
+            const probe = document.createElement('div');
+            probe.className = 'log-line';
+            probe.style.visibility = 'hidden';
+            probe.style.position = 'absolute';
+            probe.textContent = 'Xg';
+            logContent.appendChild(probe);
+            LINE_HEIGHT = probe.getBoundingClientRect().height;
+            logContent.removeChild(probe);
+            lineHeightMeasured = true;
         }
 
         function getPooledElement() {
@@ -567,6 +581,9 @@ try {
         }
 
         function setupVirtualScroll() {
+            // Measure actual line height from DOM before virtual positioning
+            measureLineHeight();
+
             // Remove all existing direct-mode log-line elements before switching
             // to virtual scrolling. Without this cleanup, old elements remain in
             // the DOM alongside virtual elements, causing overlapping display and
@@ -712,8 +729,7 @@ try {
                 updateVirtualScrollHeight();
                 renderVisibleLines();
                 if (autoScroll) {
-                    const totalLines = filterOnly ? filteredLineIndices.length : allLogLines.length;
-                    logContent.scrollTop = totalLines * LINE_HEIGHT;
+                    logContent.scrollTop = logContent.scrollHeight - logContent.clientHeight;
                 }
             } else {
                 // Original rendering for small datasets - batch DOM update
@@ -811,8 +827,7 @@ try {
             btnAutoScroll.classList.toggle('paused', !autoScroll);
             if (autoScroll) {
                 if (virtualScrollEnabled) {
-                    const totalLines = filterOnly ? filteredLineIndices.length : allLogLines.length;
-                    logContent.scrollTop = totalLines * LINE_HEIGHT;
+                    logContent.scrollTop = logContent.scrollHeight - logContent.clientHeight;
                 } else {
                     logContent.scrollTop = logContent.scrollHeight;
                 }
