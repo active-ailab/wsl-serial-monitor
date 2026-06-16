@@ -47,6 +47,7 @@ try {
         let virtualScrollEnabled = false;
         let allLogLines = []; // Store all log line data
         let allLogLineBytes = []; // Store byte sizes for each line
+        let filteredLineIndices = []; // Indices of lines matching filter (for filterOnly mode)
         let renderStartIndex = -1;
         let renderEndIndex = -1;
         let scrollRAF = null; // RAF for auto-scroll state update
@@ -102,14 +103,14 @@ try {
 
         function updateAutoScrollState() {
             const atBottom = isAtBottom();
-            if (atBottom && !autoScroll) {
-                // User scrolled back to bottom, re-enable auto-scroll
+            // Only auto-enable when user manually scrolls back to bottom
+            // Don't re-enable if user explicitly toggled it off via button
+            if (atBottom && !autoScroll && userScrolled) {
                 autoScroll = true;
                 userScrolled = false;
                 btnAutoScroll.textContent = '⬇ Auto-scroll: ON';
                 btnAutoScroll.classList.remove('paused');
             } else if (!atBottom && autoScroll && userScrolled) {
-                // User scrolled away from bottom, disable auto-scroll
                 autoScroll = false;
                 btnAutoScroll.textContent = '⬇ Auto-scroll: OFF';
                 btnAutoScroll.classList.add('paused');
@@ -312,6 +313,24 @@ try {
 
         function getActiveFilters() { return filters.filter(f => f.enabled && f.text.trim().length > 0); }
 
+        function updateFilteredIndices() {
+            if (!filterOnly) {
+                filteredLineIndices = [];
+                return;
+            }
+            const active = getActiveFilters();
+            if (active.length === 0) {
+                filteredLineIndices = [];
+                return;
+            }
+            filteredLineIndices = [];
+            for (let i = 0; i < allLogLines.length; i++) {
+                if (matchFilters(allLogLines[i]).length > 0) {
+                    filteredLineIndices.push(i);
+                }
+            }
+        }
+
         function matchFilters(text) {
             const active = getActiveFilters();
             if (active.length === 0) return [];
@@ -333,13 +352,14 @@ try {
             let visibleCount = 0;
 
             if (virtualScrollEnabled) {
+                // Update filtered indices for filterOnly mode
+                updateFilteredIndices();
                 // Force re-render by resetting cached range
                 renderStartIndex = -1;
                 renderEndIndex = -1;
+                updateVirtualScrollHeight();
                 renderVisibleLines();
-                visibleCount = filterOnly ? 
-                    allLogLines.filter(text => matchFilters(text).length > 0).length : 
-                    allLogLines.length;
+                visibleCount = filterOnly ? filteredLineIndices.length : allLogLines.length;
                 filterCountEl.textContent = active.length > 0 ? visibleCount + '/' + allLogLines.length : String(allLogLines.length);
                 return;
             }
@@ -416,7 +436,8 @@ try {
             // Update the spacer height to reflect total content
             const spacer = document.getElementById('virtualScrollSpacer');
             if (spacer) {
-                spacer.style.height = (allLogLines.length * LINE_HEIGHT) + 'px';
+                const lineCount = filterOnly ? filteredLineIndices.length : allLogLines.length;
+                spacer.style.height = (lineCount * LINE_HEIGHT) + 'px';
             }
         }
 
@@ -427,15 +448,28 @@ try {
             const viewportHeight = logContent.clientHeight;
             __debug.renders++;
 
+            const totalLines = filterOnly ? filteredLineIndices.length : allLogLines.length;
+            if (totalLines === 0) {
+                // Clear all active elements if no lines to show
+                for (const [, el] of activeElements) {
+                    el.remove();
+                    releaseElement(el);
+                }
+                activeElements.clear();
+                renderStartIndex = -1;
+                renderEndIndex = -1;
+                return;
+            }
+
             // Calculate visible range
             const startIndex = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT) - OVERSCAN);
-            const endIndex = Math.min(allLogLines.length, Math.ceil((scrollTop + viewportHeight) / LINE_HEIGHT) + OVERSCAN);
+            const endIndex = Math.min(totalLines, Math.ceil((scrollTop + viewportHeight) / LINE_HEIGHT) + OVERSCAN);
 
             // Detect and recover from blank view: visible range is valid but
             // no elements are rendered. Force scrollTop clamp and re-render.
             if (startIndex >= 0 && endIndex > startIndex && activeElements.size === 0 && renderStartIndex === -1) {
                 __debug.blanks++;
-                const maxScroll = allLogLines.length * LINE_HEIGHT - logContent.clientHeight;
+                const maxScroll = totalLines * LINE_HEIGHT - logContent.clientHeight;
                 if (logContent.scrollTop > maxScroll && maxScroll > 0) {
                     logContent.scrollTop = maxScroll;
                     // Re-enter with corrected scrollTop
@@ -472,7 +506,9 @@ try {
             const frag = document.createDocumentFragment();
             for (let i = startIndex; i < endIndex; i++) {
                 if (!activeElements.has(i)) {
-                    const line = updatePooledElement(getPooledElement(), allLogLines[i], i, active);
+                    // Map virtual index to actual line index
+                    const lineIndex = filterOnly ? filteredLineIndices[i] : i;
+                    const line = updatePooledElement(getPooledElement(), allLogLines[lineIndex], lineIndex, active);
                     line.style.position = 'absolute';
                     line.style.top = (i * LINE_HEIGHT) + 'px';
                     line.style.width = '100%';
@@ -618,6 +654,10 @@ try {
                 allLogLineBytes.push(getLineByteSize(text));
                 lineCount++;
                 displayedBufferBytes += allLogLineBytes[allLogLineBytes.length - 1];
+                // Update filtered indices for new lines
+                if (filterOnly && matchFilters(text).length > 0) {
+                    filteredLineIndices.push(allLogLines.length - 1);
+                }
             }
 
             // Trim buffer if needed - batch remove from front
@@ -634,6 +674,10 @@ try {
                     allLogLineBytes.splice(0, removeCount);
                     displayedBufferBytes -= removedBytes;
                     lineCount -= removeCount;
+                    // Update filtered indices after trim
+                    filteredLineIndices = filteredLineIndices
+                        .map(idx => idx - removeCount)
+                        .filter(idx => idx >= 0);
                     renderStartIndex = -1;
                     renderEndIndex = -1;
                     for (const [, el] of activeElements) {
@@ -647,7 +691,8 @@ try {
                     // from stale scrollTop, producing out-of-bounds indices and
                     // an empty view.
                     if (virtualScrollEnabled) {
-                        const maxScroll = allLogLines.length * LINE_HEIGHT - logContent.clientHeight;
+                        const totalLines = filterOnly ? filteredLineIndices.length : allLogLines.length;
+                        const maxScroll = totalLines * LINE_HEIGHT - logContent.clientHeight;
                         if (maxScroll <= 0) {
                             logContent.scrollTop = 0;
                         } else if (logContent.scrollTop > maxScroll) {
@@ -666,7 +711,10 @@ try {
             if (virtualScrollEnabled) {
                 updateVirtualScrollHeight();
                 renderVisibleLines();
-                if (autoScroll) { logContent.scrollTop = logContent.scrollHeight; }
+                if (autoScroll) {
+                    const totalLines = filterOnly ? filteredLineIndices.length : allLogLines.length;
+                    logContent.scrollTop = totalLines * LINE_HEIGHT;
+                }
             } else {
                 // Original rendering for small datasets - batch DOM update
                 const active = getActiveFilters();
@@ -694,6 +742,7 @@ try {
             displayedBufferBytes = 0;
             allLogLines = [];
             allLogLineBytes = [];
+            filteredLineIndices = [];
             renderStartIndex = -1;
             renderEndIndex = -1;
             teardownVirtualScroll();
@@ -714,11 +763,12 @@ try {
             overlay.id = '__debugOverlay';
             overlay.style.cssText = 'position:fixed;top:40px;right:8px;z-index:9999;background:#1e1e1e;color:#4ec9b0;padding:10px;font:12px monospace;border:1px solid #4ec9b0;border-radius:4px;white-space:pre;max-height:80vh;overflow:auto;';
             const spacer = document.getElementById('virtualScrollSpacer');
+            const totalLines = filterOnly ? filteredLineIndices.length : allLogLines.length;
             const info = [
-                `lines: ${allLogLines.length}  lineCount: ${lineCount}`,
-                `virtEnabled: ${virtualScrollEnabled}  autoScroll: ${autoScroll}  paused: ${paused}`,
+                `lines: ${allLogLines.length}  filtered: ${filteredLineIndices.length}  lineCount: ${lineCount}`,
+                `virtEnabled: ${virtualScrollEnabled}  autoScroll: ${autoScroll}  paused: ${paused}  filterOnly: ${filterOnly}`,
                 `scrollTop: ${logContent.scrollTop.toFixed(0)}  scrollH: ${logContent.scrollHeight}  clientH: ${logContent.clientHeight}`,
-                `spacerH: ${spacer?.style.height || 'N/A'}`,
+                `spacerH: ${spacer?.style.height || 'N/A'}  totalLines: ${totalLines}`,
                 `renderRange: [${renderStartIndex}, ${renderEndIndex}]  activeEls: ${activeElements.size}`,
                 `displayedBytes: ${displayedBufferBytes}  maxBytes: ${maxBufferBytes}`,
                 `pool: ${domPool.length}/${DOM_POOL_SIZE}`,
@@ -756,10 +806,17 @@ try {
 
         function toggleAutoScroll() {
             autoScroll = !autoScroll;
-            userScrolled = false;
+            userScrolled = false; // Reset user scroll flag when manually toggling
             btnAutoScroll.textContent = autoScroll ? '⬇ Auto-scroll: ON' : '⬇ Auto-scroll: OFF';
             btnAutoScroll.classList.toggle('paused', !autoScroll);
-            if (autoScroll) { logContent.scrollTop = logContent.scrollHeight; }
+            if (autoScroll) {
+                if (virtualScrollEnabled) {
+                    const totalLines = filterOnly ? filteredLineIndices.length : allLogLines.length;
+                    logContent.scrollTop = totalLines * LINE_HEIGHT;
+                } else {
+                    logContent.scrollTop = logContent.scrollHeight;
+                }
+            }
         }
 
         function toggleTimestamp() { showTimestamp = document.getElementById('chkTimestamp').checked; persistUiState(); }
@@ -931,6 +988,10 @@ try {
             if (searchInput.value) {
                 performSearch();
             }
+            // Initialize filtered indices for existing data
+            if (filterOnly && allLogLines.length > 0) {
+                updateFilteredIndices();
+            }
             applyFiltersToExisting();
         }
 
@@ -944,7 +1005,8 @@ try {
             if (activeElements.size > 0) return;
             // View is blank but we have data — force re-render
             __debug.blanks++;
-            const maxScroll = allLogLines.length * LINE_HEIGHT - logContent.clientHeight;
+            const totalLines = filterOnly ? filteredLineIndices.length : allLogLines.length;
+            const maxScroll = totalLines * LINE_HEIGHT - logContent.clientHeight;
             if (logContent.scrollTop > maxScroll && maxScroll > 0) {
                 logContent.scrollTop = maxScroll;
             }

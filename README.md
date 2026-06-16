@@ -1,6 +1,6 @@
 # Serial Monitor (WSL & Windows)
 
-[![Version](https://img.shields.io/badge/version-0.4.7-blue)](https://marketplace.visualstudio.com/items?itemName=Roger-Han.wsl-serial-monitor)
+[![Version](https://img.shields.io/badge/version-0.4.8-blue)](https://marketplace.visualstudio.com/items?itemName=Roger-Han.wsl-serial-monitor)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![GitHub](https://img.shields.io/badge/GitHub-Zepp--Hzanj%2Fwsl--serial--monitor-blue?logo=github)](https://github.com/Zepp-Hanzj/wsl-serial-monitor)
 
@@ -64,7 +64,7 @@ code --install-extension Roger-Han.wsl-serial-monitor
 **方式三：从 VSIX 安装**
 
 ```bash
-code --install-extension wsl-serial-monitor-0.4.7.vsix
+code --install-extension wsl-serial-monitor-0.4.8.vsix
 ```
 
 ### 使用
@@ -377,7 +377,7 @@ npm install -g @vscode/vsce
 vsce package
 
 # 安装
-code --install-extension wsl-serial-monitor-0.4.7.vsix
+code --install-extension wsl-serial-monitor-0.4.8.vsix
 ```
 
 ### 开发调试
@@ -385,6 +385,12 @@ code --install-extension wsl-serial-monitor-0.4.7.vsix
 在 VS Code 中打开项目文件夹，按 `F5` 启动扩展开发主机进行调试。
 
 ## 📝 更新日志
+
+### v0.4.8
+
+- **修复自动滚动**：修复 Auto-scroll OFF 时视图仍然滚动的问题
+- **修复 Filter Only**：修复虚拟滚动模式下 Filter Only 功能显示空白区域的问题
+- **改进滚动逻辑**：用户手动切换 Auto-scroll 后不会被自动重新启用
 
 ### v0.4.7
 
