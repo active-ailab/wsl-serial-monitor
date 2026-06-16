@@ -49,8 +49,10 @@ try {
         let allLogLineBytes = []; // Store byte sizes for each line
         let renderStartIndex = -1;
         let renderEndIndex = -1;
-        let scrollRAF = null; // RequestAnimationFrame ID for scroll handling
+        let scrollRAF = null; // RAF for auto-scroll state update
+        let virtualScrollRAF = null; // RAF for virtual scroll render
         let appendRAF = null; // RAF for batched appends
+        let __debug = { appends: 0, trims: 0, renders: 0, blanks: 0 };
 
         // DOM element pool for reuse
         const DOM_POOL_SIZE = 200;
@@ -423,13 +425,31 @@ try {
 
             const scrollTop = logContent.scrollTop;
             const viewportHeight = logContent.clientHeight;
+            __debug.renders++;
 
             // Calculate visible range
             const startIndex = Math.max(0, Math.floor(scrollTop / LINE_HEIGHT) - OVERSCAN);
             const endIndex = Math.min(allLogLines.length, Math.ceil((scrollTop + viewportHeight) / LINE_HEIGHT) + OVERSCAN);
 
-            // Skip if range hasn't changed
-            if (startIndex === renderStartIndex && endIndex === renderEndIndex) return;
+            // Detect and recover from blank view: visible range is valid but
+            // no elements are rendered. Force scrollTop clamp and re-render.
+            if (startIndex >= 0 && endIndex > startIndex && activeElements.size === 0 && renderStartIndex === -1) {
+                __debug.blanks++;
+                const maxScroll = allLogLines.length * LINE_HEIGHT - logContent.clientHeight;
+                if (logContent.scrollTop > maxScroll && maxScroll > 0) {
+                    logContent.scrollTop = maxScroll;
+                    // Re-enter with corrected scrollTop
+                    renderStartIndex = -1;
+                    renderEndIndex = -1;
+                    renderVisibleLines();
+                    return;
+                }
+            }
+
+            // Skip if range hasn't changed and elements are present.
+            // After a buffer trim, activeElements may be empty even though
+            // the range indices match — we must re-render in that case.
+            if (startIndex === renderStartIndex && endIndex === renderEndIndex && activeElements.size > 0) return;
 
             const oldStart = renderStartIndex;
             const oldEnd = renderEndIndex;
@@ -511,6 +531,15 @@ try {
         }
 
         function setupVirtualScroll() {
+            // Remove all existing direct-mode log-line elements before switching
+            // to virtual scrolling. Without this cleanup, old elements remain in
+            // the DOM alongside virtual elements, causing overlapping display and
+            // incorrect scrollHeight calculation (scrollbar jumps to middle).
+            const existingLines = logContent.querySelectorAll('.log-line');
+            for (const el of existingLines) {
+                el.remove();
+            }
+
             // Create spacer element
             let spacer = document.getElementById('virtualScrollSpacer');
             if (!spacer) {
@@ -530,12 +559,12 @@ try {
             logContent.style.right = '0';
             logContent.style.bottom = '';
 
-            // Add scroll listener with RAF throttling
+            // Add scroll listener with RAF throttling (uses separate RAF from auto-scroll)
             logContent.addEventListener('scroll', () => {
-                if (scrollRAF) cancelAnimationFrame(scrollRAF);
-                scrollRAF = requestAnimationFrame(() => {
+                if (virtualScrollRAF) cancelAnimationFrame(virtualScrollRAF);
+                virtualScrollRAF = requestAnimationFrame(() => {
                     renderVisibleLines();
-                    scrollRAF = null;
+                    virtualScrollRAF = null;
                 });
             });
 
@@ -580,6 +609,7 @@ try {
 
             const linesLength = lines.length;
             const startLineIndex = allLogLines.length;
+            __debug.appends++;
 
             // Store line data for virtual scrolling - batch push
             for (let i = 0; i < linesLength; i++) {
@@ -599,25 +629,31 @@ try {
                     removeCount++;
                 }
                 if (removeCount > 0) {
+                    __debug.trims++;
                     allLogLines.splice(0, removeCount);
                     allLogLineBytes.splice(0, removeCount);
                     displayedBufferBytes -= removedBytes;
                     lineCount -= removeCount;
-                    // Force full re-render after trim: active elements have stale
-                    // style.top values from before the splice, and the range check
-                    // in renderVisibleLines() would skip the update if we only
-                    // adjusted the cached indices. Reset to -1 so the next call
-                    // always rebuilds the visible range with correct positions.
                     renderStartIndex = -1;
                     renderEndIndex = -1;
-                    // Release all active elements — their style.top positions are
-                    // stale after the splice. renderVisibleLines() will recreate
-                    // them with correct positions since we reset the range to -1.
                     for (const [, el] of activeElements) {
                         el.remove();
                         releaseElement(el);
                     }
                     activeElements.clear();
+                    // Clamp scrollTop BEFORE renderVisibleLines() uses it.
+                    // Browser scroll clamping after spacer shrink is async —
+                    // without this, renderVisibleLines() calculates visible range
+                    // from stale scrollTop, producing out-of-bounds indices and
+                    // an empty view.
+                    if (virtualScrollEnabled) {
+                        const maxScroll = allLogLines.length * LINE_HEIGHT - logContent.clientHeight;
+                        if (maxScroll <= 0) {
+                            logContent.scrollTop = 0;
+                        } else if (logContent.scrollTop > maxScroll) {
+                            logContent.scrollTop = maxScroll;
+                        }
+                    }
                 }
             }
 
@@ -670,6 +706,34 @@ try {
         function clearLog() { vscode.postMessage({ command: 'clear' }); doClear(); }
         function copyLog() { vscode.postMessage({ command: 'copy' }); }
         function saveLog() { vscode.postMessage({ command: 'save' }); }
+
+        function showDebugOverlay() {
+            let overlay = document.getElementById('__debugOverlay');
+            if (overlay) { overlay.remove(); return; }
+            overlay = document.createElement('div');
+            overlay.id = '__debugOverlay';
+            overlay.style.cssText = 'position:fixed;top:40px;right:8px;z-index:9999;background:#1e1e1e;color:#4ec9b0;padding:10px;font:12px monospace;border:1px solid #4ec9b0;border-radius:4px;white-space:pre;max-height:80vh;overflow:auto;';
+            const spacer = document.getElementById('virtualScrollSpacer');
+            const info = [
+                `lines: ${allLogLines.length}  lineCount: ${lineCount}`,
+                `virtEnabled: ${virtualScrollEnabled}  autoScroll: ${autoScroll}  paused: ${paused}`,
+                `scrollTop: ${logContent.scrollTop.toFixed(0)}  scrollH: ${logContent.scrollHeight}  clientH: ${logContent.clientHeight}`,
+                `spacerH: ${spacer?.style.height || 'N/A'}`,
+                `renderRange: [${renderStartIndex}, ${renderEndIndex}]  activeEls: ${activeElements.size}`,
+                `displayedBytes: ${displayedBufferBytes}  maxBytes: ${maxBufferBytes}`,
+                `pool: ${domPool.length}/${DOM_POOL_SIZE}`,
+                `appends: ${__debug.appends}  trims: ${__debug.trims}  renders: ${__debug.renders}  blanks: ${__debug.blanks}`,
+                `userScrolled: ${userScrolled}`
+            ].join('\n');
+            overlay.textContent = info;
+            document.body.appendChild(overlay);
+        }
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'D') {
+                e.preventDefault();
+                showDebugOverlay();
+            }
+        });
 
         function updateStatus(connected, info) {
             if (connected) {
@@ -871,6 +935,23 @@ try {
         }
 
         restoreUiState();
+
+        // Watchdog: periodically check for blank view and recover.
+        // Catches edge cases where virtual scroll renders nothing despite
+        // having data (e.g. after trim + async scroll clamping race).
+        setInterval(() => {
+            if (!virtualScrollEnabled || allLogLines.length === 0) return;
+            if (activeElements.size > 0) return;
+            // View is blank but we have data — force re-render
+            __debug.blanks++;
+            const maxScroll = allLogLines.length * LINE_HEIGHT - logContent.clientHeight;
+            if (logContent.scrollTop > maxScroll && maxScroll > 0) {
+                logContent.scrollTop = maxScroll;
+            }
+            renderStartIndex = -1;
+            renderEndIndex = -1;
+            renderVisibleLines();
+        }, 2000);
 
         } catch (e) {
             document.body.innerHTML = '<div style="padding:20px;color:#f44747;font-family:monospace;white-space:pre-wrap;">'

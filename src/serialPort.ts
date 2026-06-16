@@ -289,7 +289,9 @@ try {
                     }
                 }
             }
-        } catch {}
+        } catch {
+            if ($port.IsOpen) { Send-Bytes ("CMD_ERROR|" + $_.Exception.Message + [char]10) }
+        }
 
         $hbCount++
         if ($hbCount -ge 500) {
@@ -495,6 +497,8 @@ try {
                         return;
                     } else if (line.startsWith('READ_ERROR|')) {
                         handlers.onError(`Read error: ${line.substring('READ_ERROR|'.length)}`);
+                    } else if (line.startsWith('CMD_ERROR|')) {
+                        handlers.onError(`Command error: ${line.substring('CMD_ERROR|'.length)}`);
                     } else {
                         rawData += line + '\n';
                     }

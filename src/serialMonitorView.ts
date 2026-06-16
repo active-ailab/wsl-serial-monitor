@@ -335,6 +335,10 @@ export class SerialMonitorViewProvider {
             this.logBufferByteSizes.push(lineByteSize);
             this.logBufferBytes += lineByteSize;
             this.pendingLogs.push(line);
+            // Cap pendingLogs to prevent unbounded growth when panel is disposed
+            if (this.pendingLogs.length > 10000) {
+                this.pendingLogs.splice(0, this.pendingLogs.length - 5000);
+            }
         }
 
         // Remaining partial data stays in lineBuffer for next chunk
@@ -381,6 +385,11 @@ export class SerialMonitorViewProvider {
 
         if (this.pendingLogs.length > 0 && !this.webviewReady) {
             this.debugLog(`[WEBVIEW] Holding log batch until ready lines=${this.pendingLogs.length}`);
+            // Reschedule flush — without this, pending logs stall until
+            // the next appendLog() call triggers a new timer.
+            this.flushTimer = setTimeout(() => {
+                this.flushPendingLogs();
+            }, 100);
         }
     }
 
