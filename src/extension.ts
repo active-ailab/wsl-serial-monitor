@@ -179,6 +179,12 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    context.subscriptions.push(
+        vscode.commands.registerCommand('wsl-serial-monitor.showAgentFiles', async () => {
+            await showAgentFiles(context);
+        })
+    );
+
     // Serial data events
     let dataCount = 0;
     serialManager.on('data', (data: string) => {
@@ -214,6 +220,9 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     outputChannel.appendLine('[INIT] Extension activated.');
+
+    // Copy agent files to workspace on activation
+    void copyAgentFilesToWorkspace(context);
 
     void tryAutoConnectOnStartup(treeProvider);
 }
@@ -492,4 +501,56 @@ export async function deactivate(): Promise<void> {
         await serialManager.close();
     }
     logStore?.closeSession('extension deactivated');
+}
+
+async function copyAgentFilesToWorkspace(context: vscode.ExtensionContext): Promise<void> {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+        return;
+    }
+
+    const workspaceRoot = workspaceFolders[0].uri.fsPath;
+    const agentFiles = ['AGENTS.md', 'CLAUDE.md', 'AGENT_LOG_CLI_PLAN.md'];
+
+    for (const fileName of agentFiles) {
+        const sourcePath = path.join(context.extensionUri.fsPath, fileName);
+        const destPath = path.join(workspaceRoot, fileName);
+
+        try {
+            if (fs.existsSync(sourcePath) && !fs.existsSync(destPath)) {
+                fs.copyFileSync(sourcePath, destPath);
+                outputChannel?.appendLine(`[AGENT] Copied ${fileName} to workspace`);
+            }
+        } catch (err: any) {
+            outputChannel?.appendLine(`[AGENT] Failed to copy ${fileName}: ${err.message}`);
+        }
+    }
+}
+
+async function showAgentFiles(context: vscode.ExtensionContext): Promise<void> {
+    const agentFiles = [
+        { label: 'AGENTS.md', description: 'Agent instructions for AI coding tools' },
+        { label: 'CLAUDE.md', description: 'Claude Code specific instructions' },
+        { label: 'AGENT_LOG_CLI_PLAN.md', description: 'Agent CLI documentation' }
+    ];
+
+    const selected = await vscode.window.showQuickPick(agentFiles, {
+        placeHolder: 'Select an agent configuration file to view'
+    });
+
+    if (!selected) {
+        return;
+    }
+
+    const filePath = path.join(context.extensionUri.fsPath, selected.label);
+    try {
+        if (fs.existsSync(filePath)) {
+            const doc = await vscode.workspace.openTextDocument(filePath);
+            await vscode.window.showTextDocument(doc);
+        } else {
+            vscode.window.showWarningMessage(`File not found: ${selected.label}`);
+        }
+    } catch (err: any) {
+        vscode.window.showErrorMessage(`Failed to open file: ${err.message}`);
+    }
 }

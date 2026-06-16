@@ -2,7 +2,7 @@
   "name": "wsl-serial-monitor",
   "displayName": "Serial Monitor (WSL & Windows)",
   "description": "Open and monitor COM serial ports from WSL or native Windows, with real-time log display, color filters, search in an editor tab, and Agent CLI for log analysis.",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "publisher": "Roger-Han",
   "author": {
     "name": "Roger-Han"
@@ -111,6 +111,12 @@
         "title": "Serial: Open Settings",
         "category": "Serial",
         "icon": "$(gear)"
+      },
+      {
+        "command": "wsl-serial-monitor.showAgentFiles",
+        "title": "Serial: Show Agent Configuration Files",
+        "category": "Serial",
+        "icon": "$(file-code)"
       }
     ],
     "menus": {
